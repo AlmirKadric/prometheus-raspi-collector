@@ -1,0 +1,121 @@
+#!/bin/bash
+
+set -o nounset
+set -o errexit
+
+
+# Get path to vcgencmd command
+VCGEN="$(command -v vcgencmd)"
+
+# Get metric text file location
+TEXTFILE_DIR="/var/lib/prometheus/node-exporter"
+METRICS_FILE="${TEXTFILE_DIR}/raspi-metrics.prom"
+
+# Intermediate file to which metrics are written before being committed
+TMP_FILE="$(tempfile)"
+
+
+# Get temperatures
+{
+  echo "# HELP rpi_temperature Temperatures of the components in degree celsius.";
+  echo "# TYPE rpi_temperature gauge";
+} >> "${TMP_FILE}"
+
+for SENSOR in $(ls /sys/class/thermal/); do
+  TEMP_CELSIUS="$(awk '{printf "%.3f", $1/1000}' /sys/class/thermal/${SENSOR}/temp)" || true
+  TEMP_CELSIUS="${TEMP_CELSIUS:=0}"
+
+  SENSOR_TYPE="$(cat /sys/class/thermal/${SENSOR}/type)"
+  SENSOR_TYPE="${SENSOR_TYPE:=N/A}"
+
+  echo "rpi_temperature{sensor=\"${SENSOR}\",type=\"${SENSOR_TYPE}\"} ${TEMP_CELSIUS}" >> "${TMP_FILE}"
+done
+
+
+# Get component frequencies
+{
+  echo "# HELP rpi_frequency Clock frequencies of the components in hertz.";
+  echo "# TYPE rpi_frequency gauge";
+} >> "${TMP_FILE}"
+
+for FREQ_COMPONENT in \
+  arm \
+  core \
+  h264 \
+  isp \
+  v3d \
+  uart \
+  pwm \
+  emmc \
+  pixel \
+  vec \
+  hdmi \
+  dpi \
+; do
+  FREQUENCY="$(${VCGEN} measure_clock "${FREQ_COMPONENT}" | cut -d '=' -f 2)" || true
+  FREQUENCY="${FREQUENCY:=0}"
+
+  echo "rpi_frequency{component=\"${FREQ_COMPONENT}\"} ${FREQUENCY}" >> "${TMP_FILE}"
+done
+
+
+# Get component voltages
+{
+  echo "# HELP rpi_voltage Voltages of the components in volts.";
+  echo "# TYPE rpi_voltage gauge";
+} >> "${TMP_FILE}"
+
+for VOLT_COMPONENT in \
+  core \
+  sdram_c \
+  sdram_i \
+  sdram_p \
+; do
+  VOLTS="$(${VCGEN} measure_volts "${VOLT_COMPONENT}" | cut -d '=' -f 2 | sed 's/V$//')" || true
+  VOLTS="${VOLTS:=0}"
+
+  echo "rpi_voltage{component=\"${VOLT_COMPONENT}\"} ${VOLTS}" >> "${TMP_FILE}"
+done
+
+
+# Get memory split of CPU vs GPU
+{
+  echo "# HELP rpi_memory Memory split of CPU and GPU in bytes.";
+  echo "# TYPE rpi_memory gauge";
+} >> "${TMP_FILE}"
+
+for MEM_COMPONENT in \
+  arm \
+  gpu \
+; do
+  MEM="$(${VCGEN} get_mem "${MEM_COMPONENT}" | cut -d '=' -f 2 | sed 's/M$//')" || true
+  MEM="${MEM:=0}"
+  MEM="$(( MEM * 1024 * 1024 ))"
+
+  echo "rpi_memory{component=\"${MEM_COMPONENT}\"} ${MEM}" >> "${TMP_FILE}"
+done
+
+
+# Get throttled events
+{
+  echo "# HELP rpi_throttled Throttled state of the system.";
+  echo "# TYPE rpi_throttled gauge";
+} >> "${TMP_FILE}"
+
+THROTTLED_MAP_HEX="$(${VCGEN} get_throttled | cut -d '=' -f 2 | cut -d 'x' -f 2)"
+THROTTLED_MAP_HEX_PADDED="$(echo "${THROTTLED_MAP_HEX}" | sed -e 's/\<\([0-9a-fA-F]\{1,5\}\)\>/00000\1/; s/\<0*\([0-9a-fA-F]\{6\}\)\>/\1/')"
+THROTTLED_MAP_BIN="$(echo "${THROTTLED_MAP_HEX_PADDED}" | xxd -r -p | xxd -b | sed -E 's/.*:(\ (.*))+[\ ]+.*/\2/ ; s/\ //g')"
+
+echo "rpi_throttled{component=\"under_voltage_detected\"} ${THROTTLED_MAP_BIN:(-1):1}" >> "${TMP_FILE}"
+echo "rpi_throttled{component=\"arm_frequency_capped\"} ${THROTTLED_MAP_BIN:(-2):1}" >> "${TMP_FILE}"
+echo "rpi_throttled{component=\"currently_throttled\"} ${THROTTLED_MAP_BIN:(-3):1}" >> "${TMP_FILE}"
+echo "rpi_throttled{component=\"soft_temperature\"} ${THROTTLED_MAP_BIN:(-4):1}" >> "${TMP_FILE}"
+
+
+
+# Commit metrics file
+chmod +r "${TMP_FILE}"
+mv "${TMP_FILE}" "${METRICS_FILE}"
+
+# Exit with success
+exit 0

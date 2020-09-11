@@ -1,0 +1,8 @@
+[Unit]
+Description=Timer for the Raspberry Pi Prometheus text collector
+
+[Timer]
+OnCalendar=*:*:0,15,30,45
+
+[Install]
+WantedBy=timers.target

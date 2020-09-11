@@ -1,0 +1,7 @@
+[Unit]
+Description=Prometheus text collector for Raspberry Pi metrics
+Wants=raspi_collector.timer
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/raspi_collector
